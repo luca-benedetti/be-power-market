@@ -7,53 +7,100 @@ const cachePath = fm.joinPath(fm.documentsDirectory(), "gemini_words_daily.json"
 const now = new Date();
 const todayStr = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
 
+// Quante parole chiedere a Gemini e quante tenerne dopo il filtro locale
+const REQUEST_COUNT = 15;
+const WORDS_PER_DAY = 10;
+
+// Una parola già uscita non ritorna prima di questo periodo (60 giorni)
+const COOLDOWN_MS = 60 * 24 * 60 * 60 * 1000;
+
 // 2. Lettura dello stato salvato in memoria
 let state = {
   date: "",
   currentIndex: 0,
-  words: []
+  words: [],
+  seen: {}   // parola (minuscola) -> timestamp dell'ultima volta che è uscita
 };
 
 if (fm.fileExists(cachePath)) {
   try {
     const rawData = fm.readString(cachePath);
-    state = JSON.parse(rawData);
+    state = { ...state, ...JSON.parse(rawData) };
   } catch (e) {
     console.log("Errore lettura cache, la ricreo.");
   }
+}
+
+if (!state.seen) state.seen = {};
+
+// Migrazione dal vecchio formato (state.history) al nuovo (state.seen)
+if (state.history) {
+  for (const w of state.history) state.seen[norm(w)] = Date.now();
+  delete state.history;
+}
+
+function norm(w) {
+  return String(w).trim().toLowerCase();
+}
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function saveState() {
   fm.writeString(cachePath, JSON.stringify(state));
 }
 
-// Themes to rotate through daily, in English (the prompt itself is now in
-// English — more effective for targeting real English vocabulary).
+// Temi scelti a caso ad ogni richiesta, in inglese (il prompt è in inglese,
+// più efficace per ottenere vocabolario inglese reale).
 const THEMES = [
   "emotions and mental states", "nature and landscapes", "business and economics",
   "science and technology", "art and creativity", "human relationships",
   "food and taste", "travel and places", "time and change", "the body and movement"
 ];
 
-// Storico leggero delle parole già uscite nei giorni precedenti (max 150),
-// usato solo per chiedere a Gemini di non ripeterle. Non è la lista delle
-// parole "conosciute": qui restano tutte, anche quelle già viste.
-if (!state.history) state.history = [];
+// Registri scelti a caso ad ogni richiesta: spezzano le "parole preferite" del modello
+const REGISTERS = [
+  "a phrasal verb", "an idiom or fixed expression", "an adjective", "a verb",
+  "a noun", "an adverb", "an informal word used in everyday speech"
+];
 
-// 3. Funzione per scaricare 10 parole da Gemini
-async function fetch10Words() {
+// Parole uscite di recente (entro il cooldown), più recenti prima, max 100
+function recentWords() {
+  const cutoff = Date.now() - COOLDOWN_MS;
+  return Object.keys(state.seen)
+    .filter(k => state.seen[k] >= cutoff)
+    .sort((a, b) => state.seen[b] - state.seen[a])
+    .slice(0, 100);
+}
+
+function isRecent(word) {
+  const last = state.seen[norm(word)];
+  return last !== undefined && Date.now() - last < COOLDOWN_MS;
+}
+
+// Rimuove dal file le parole più vecchie del cooldown
+function pruneSeen() {
+  const cutoff = Date.now() - COOLDOWN_MS;
+  for (const key of Object.keys(state.seen)) {
+    if (state.seen[key] < cutoff) delete state.seen[key];
+  }
+}
+
+// 3. Chiamata a Gemini: restituisce una lista di parole grezza
+async function askGemini(theme, register) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${API_KEY}`;
 
-  const theme = THEMES[Math.floor(Math.random() * THEMES.length)];
-  const recentHistory = state.history.slice(-60); // no need to send the whole history, just the recent ones
-  const exclusionText = recentHistory.length > 0
-    ? `Do not include any of these words, already used in previous days: ${recentHistory.join(", ")}.`
+  const avoid = recentWords();
+  const exclusionText = avoid.length > 0
+    ? `Do not include any of these words, already used recently: ${avoid.join(", ")}.`
     : "";
 
   const promptText = `
   You are helping a native Italian speaker genuinely expand their English vocabulary.
 
-  Generate a list of 10 English words related to the theme "${theme}".
+  Generate a list of ${REQUEST_COUNT} English words related to the theme "${theme}".
+  Prefer words that are ${register}.
 
   Requirements:
   - Do NOT pick basic/elementary words that a beginner already knows (e.g. "cat", "dog", "table", "happy", "big").
@@ -67,7 +114,7 @@ async function fetch10Words() {
     B2-C1 level.
   ${exclusionText}
 
-  Respond ONLY with a valid JSON array of 10 objects (no markdown, no extra text) with this structure:
+  Respond ONLY with a valid JSON array of ${REQUEST_COUNT} objects (no markdown, no extra text) with this structure:
   [
     {
       "word": "word",
@@ -85,34 +132,59 @@ async function fetch10Words() {
     contents: [{ parts: [{ text: promptText }] }],
     generationConfig: {
       responseMimeType: "application/json",
-      temperature: 1.3,   // più alto = scelte lessicali più varie/meno prevedibili
+      temperature: 1.5,   // più alto = scelte più varie (max 2.0), ma parole più rumorose
       topP: 0.97,
       topK: 64
     }
   });
 
   const res = await req.loadJSON();
-  if (res.candidates && res.candidates[0].content && res.candidates[0].content.parts[0].text) {
-    return JSON.parse(res.candidates[0].content.parts[0].text);
+  const parts = (res.candidates && res.candidates[0] && res.candidates[0].content
+    && res.candidates[0].content.parts) || [];
+  const text = parts[0] && parts[0].text;
+  if (!text) {
+    throw new Error("Risposta non valida da Gemini: " + JSON.stringify(res).slice(0, 300));
   }
-  throw new Error("Risposta non valida da Gemini: " + JSON.stringify(res).slice(0, 300));
+
+  // Tiene solo gli oggetti con i campi minimi, così il widget non mostra "Word" vuoti
+  return JSON.parse(text).filter(w => w && w.word && w.definition);
 }
 
-// 4. Se cambia il giorno o la cache è vuota, scarica 10 parole nuove.
+// 4. Filtro locale: niente parole recenti, niente doppioni. Al massimo 2 tentativi.
+async function fetchWords() {
+  const picked = [];
+  const keysInBatch = new Set();
+
+  for (let attempt = 0; attempt < 2 && picked.length < WORDS_PER_DAY; attempt++) {
+    const candidates = await askGemini(pick(THEMES), pick(REGISTERS));
+
+    for (const w of candidates) {
+      const key = norm(w.word);
+      if (isRecent(w.word) || keysInBatch.has(key)) continue;
+      keysInBatch.add(key);
+      picked.push(w);
+      if (picked.length === WORDS_PER_DAY) break;
+    }
+  }
+
+  if (picked.length === 0) throw new Error("Gemini non ha restituito parole nuove.");
+  return picked;
+}
+
+// 5. Se cambia il giorno o la cache è vuota, scarica parole nuove.
 // NESSUN fallback silenzioso: se fallisce, l'errore viene mostrato per intero.
 let needsFetch = state.date !== todayStr || !state.words || state.words.length === 0;
 let fetchError = null;
 
 if (needsFetch) {
   try {
-    state.words = await fetch10Words();
+    state.words = await fetchWords();
     state.date = todayStr;
     state.currentIndex = 0;
 
-    // Aggiorna lo storico con le parole appena arrivate, tenendo solo le
-    // ultime 150 per non far crescere il file all'infinito.
-    const newWords = state.words.map(w => w.word).filter(Boolean);
-    state.history = [...state.history, ...newWords].slice(-150);
+    const stamp = Date.now();
+    for (const w of state.words) state.seen[norm(w.word)] = stamp;
+    pruneSeen();
 
     saveState();
   } catch (e) {
@@ -146,11 +218,11 @@ if (fetchError || !state.words || state.words.length === 0) {
   Script.complete();
 }
 
-// 5. Selezione della parola corrente (quella mostrata nel widget al momento del tocco)
+// 6. Selezione della parola corrente (quella mostrata nel widget al momento del tocco)
 if (state.currentIndex >= state.words.length) state.currentIndex = 0;
 const wordData = state.words[state.currentIndex] || state.words[0];
 
-// 6. Costruzione grafica del Widget
+// 7. Costruzione grafica del Widget
 function buildWidget(data, index, total) {
   const widget = new ListWidget();
   widget.backgroundColor = new Color("#1c1c1e");
@@ -197,7 +269,7 @@ function buildWidget(data, index, total) {
   return widget;
 }
 
-// 7. Renderizzazione ed Esecuzione
+// 8. Renderizzazione ed Esecuzione
 if (config.runsInWidget) {
   const widget = buildWidget(wordData, state.currentIndex, state.words.length);
   Script.setWidget(widget);
@@ -222,5 +294,4 @@ if (config.runsInWidget) {
 
   App.close();
 }
-Script.complete();
 Script.complete();
