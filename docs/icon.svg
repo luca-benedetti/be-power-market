@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <rect width="180" height="180" rx="40" fill="#0b0f14"/>
+  <!-- day-ahead: dashed red step line across the full day -->
+  <path d="M22 96 H58 V80 H92 V104 H128 V88 H158" fill="none" stroke="#ff6b6b" stroke-width="9" stroke-dasharray="11 7" stroke-linejoin="round"/>
+  <!-- quarter-hour imbalance: bold blue step line -->
+  <path d="M22 122 H44 V62 H66 V138 H88 V78 H110 V118 H132 V54 H158" fill="none" stroke="#4dabf7" stroke-width="10" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>
