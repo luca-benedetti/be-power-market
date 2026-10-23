@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Belgian power market — today</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #131a22; --text: #e9ecef; --muted: #868e96;
+    --grid: #222b35; --axis: #3b4652; --qh: #4dabf7; --min: #adb5bd; --da: #ff6b6b;
+    --pos: #ff6b6b; --neg: #51cf66;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f7f8fa; --panel: #ffffff; --text: #1b2430; --muted: #6c757d;
+            --grid: #e3e7ec; --axis: #adb5bd; --min: #6c757d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; }
+  button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--grid);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 16px 0; }
+  .card { background: var(--panel); border: 1px solid var(--grid); border-radius: 12px; padding: 12px 14px; }
+  .card .label { color: var(--muted); font-size: 12px; }
+  .card .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .chart { background: var(--panel); border: 1px solid var(--grid); border-radius: 12px; padding: 10px; }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .legend { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .legend span { margin-right: 14px; white-space: nowrap; }
+  .sw { display: inline-block; width: 16px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 4px; }
+  .errors { color: var(--da); font-size: 13px; margin-top: 10px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 16px; line-height: 1.6; }
+  a { color: var(--qh); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Belgian power market — today</h1>
+    <div class="meta" id="status">Loading…</div>
+    <button id="refresh" type="button">Refresh</button>
+  </header>
+
+  <section class="cards">
+    <div class="card"><div class="label">Quarter-hour (latest)</div><div class="value" id="qh-now">–</div><div class="sub" id="qh-time"></div></div>
+    <div class="card"><div class="label">1-minute (latest)</div><div class="value" id="min-now">–</div><div class="sub" id="min-time"></div></div>
+    <div class="card"><div class="label">Day-ahead (this quarter-hour)</div><div class="value" id="da-now">–</div><div class="sub" id="da-time"></div></div>
+    <div class="card"><div class="label">QH − day-ahead (latest)</div><div class="value" id="spread-now">–</div><div class="sub">imbalance vs. day-ahead, €/MWh</div></div>
+  </section>
+
+  <section class="chart">
+    <svg id="chart" viewBox="0 0 960 360" role="img" aria-label="Imbalance and day-ahead prices for today"></svg>
+    <div class="legend">
+      <span><i class="sw" style="border-color: var(--qh)"></i>Quarter-hour</span>
+      <span><i class="sw" style="border-color: var(--min)"></i>1-minute</span>
+      <span><i class="sw" style="border-color: var(--da); border-top-style: dashed"></i>Day-ahead</span>
+    </div>
+  </section>
+
+  <div class="errors" id="errors"></div>
+
+  <footer>
+    Imbalance prices: <a href="https://opendata.elia.be/explore/dataset/ods162/information/">Elia ods162 (QH)</a>,
+    <a href="https://opendata.elia.be/explore/dataset/ods161/information/">ods161 (1-min)</a>.
+    Day-ahead: <a href="https://transparency.entsoe.eu/transmission-domain/r2/dayAheadPrices/show">ENTSO-E</a>,
+    refreshed by a scheduled job every few hours. Times are local (Brussels).
+  </footer>
+</main>
+
+<script>
+const ELIA = "https://opendata.elia.be/api/explore/v2.1/catalog/datasets";
+const QH_DATASET = "ods162";
+const MIN_DATASET = "ods161";
+const REFRESH_MS = 2 * 60 * 1000;
+const MIN_GAP_MS = 60 * 1000;
+
+const $ = (id) => document.getElementById(id);
+let lastLoad = 0;
+let timer = null;
+
+function isoNoMillis(d) { return d.toISOString().split(".")[0] + "Z"; }
+function pad(n) { return String(n).padStart(2, "0"); }
+function fmtTime(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtEur(v) { return v == null ? "–" : `€${v.toFixed(2)}`; }
+function colorFor(v) { return v == null ? "" : (v >= 0 ? "var(--pos)" : "var(--neg)"); }
+
+async function getJSON(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// Elia export endpoint: the whole range as one JSON array
+async function fetchElia(dataset, start, end) {
+  const where = encodeURIComponent(`datetime >= '${isoNoMillis(start)}' and datetime < '${isoNoMillis(end)}'`);
+  const rows = await getJSON(`${ELIA}/${dataset}/exports/json?where=${where}&order_by=datetime%20asc`);
+  return rows
+    .map(r => ({ t: new Date(r.datetime), v: Number(r.imbalanceprice) }))
+    .filter(p => !isNaN(p.v));
+}
+
+async function fetchDayAhead(dayStart, dayEnd) {
+  const data = await getJSON("data/da.json");
+  const updated = new Date(data.updated);
+  const points = data.points
+    .map(([t, v]) => ({ t: new Date(t), v }))
+    .filter(p => p.t >= dayStart && p.t < dayEnd);
+  return { points, updated };
+}
+
+// Value in effect at time t for a step series (last point at or before t)
+function valueAt(points, t) {
+  let v = null;
+  for (const p of points) { if (p.t <= t) v = p.v; else break; }
+  return v;
+}
+
+function drawChart(qh, min, da, dayStart, dayEnd, now) {
+  const svg = $("chart");
+  const W = 960, H = 360, mL = 52, mR = 12, mT = 10, mB = 24;
+  const plotW = W - mL - mR, plotH = H - mT - mB;
+  const tMin = dayStart.getTime(), tMax = dayEnd.getTime();
+  const X = (t) => mL + ((t - tMin) / (tMax - tMin)) * plotW;
+
+  const all = [...qh, ...min, ...da].map(p => p.v);
+  let vMin = all.length ? Math.min(...all) : -1;
+  let vMax = all.length ? Math.max(...all) : 1;
+  if (vMin === vMax) { vMin -= 1; vMax += 1; }
+  const pad_ = (vMax - vMin) * 0.08; vMin -= pad_; vMax += pad_;
+  const Y = (v) => mT + plotH - ((v - vMin) / (vMax - vMin)) * plotH;
+
+  const parts = [];
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const v = vMin + ((vMax - vMin) * i) / ticks, y = Y(v);
+    parts.push(`<line x1="${mL}" x2="${W - mR}" y1="${y}" y2="${y}" stroke="var(--grid)"/>`);
+    parts.push(`<text x="${mL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v.toFixed(0)}</text>`);
+  }
+  if (vMin < 0 && vMax > 0) {
+    parts.push(`<line x1="${mL}" x2="${W - mR}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--axis)"/>`);
+  }
+  for (let h = 0; h <= 24; h += 6) {
+    const t = new Date(dayStart); t.setHours(h, 0, 0, 0);
+    const x = X(t.getTime());
+    parts.push(`<text x="${x}" y="${H - 6}" text-anchor="${h === 0 ? "start" : h === 24 ? "end" : "middle"}" font-size="11" fill="var(--muted)">${pad(h)}:00</text>`);
+  }
+  if (now >= dayStart && now <= dayEnd) {
+    parts.push(`<line x1="${X(now.getTime())}" x2="${X(now.getTime())}" y1="${mT}" y2="${H - mB}" stroke="var(--axis)" stroke-dasharray="3 3"/>`);
+  }
+
+  // Step path: each value holds until the next point; optionally extend to the right edge
+  function step(points, color, width, extend, dashed) {
+    if (points.length < 1) return "";
+    let d = `M${X(points[0].t.getTime())},${Y(points[0].v)}`;
+    for (let i = 1; i < points.length; i++) {
+      const x = X(points[i].t.getTime());
+      d += ` L${x},${Y(points[i - 1].v)} L${x},${Y(points[i].v)}`;
+    }
+    if (extend) {
+      const last = points[points.length - 1];
+      d += ` L${X(tMax)},${Y(last.v)}`;
+    }
+    const dash = dashed ? ` stroke-dasharray="5 4"` : "";
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}"${dash} stroke-linejoin="round"/>`;
+  }
+  parts.push(step(da, "var(--da)", 1.8, true, true));
+  parts.push(step(min, "var(--min)", 1, false, false));
+  parts.push(step(qh, "var(--qh)", 2.5, false, false));
+
+  svg.innerHTML = parts.join("");
+}
+
+function showCards(qh, min, da, now) {
+  const lastQh = qh.filter(p => p.t <= now).slice(-1)[0];
+  const lastMin = min.filter(p => p.t <= now).slice(-1)[0];
+  const daNow = valueAt(da, now);
+  const daPoint = da.filter(p => p.t <= now).slice(-1)[0];
+
+  $("qh-now").textContent = fmtEur(lastQh?.v);
+  $("qh-now").style.color = colorFor(lastQh?.v);
+  $("qh-time").textContent = lastQh ? `at ${fmtTime(lastQh.t)} · €/MWh` : "no data yet";
+
+  $("min-now").textContent = fmtEur(lastMin?.v);
+  $("min-now").style.color = colorFor(lastMin?.v);
+  $("min-time").textContent = lastMin ? `at ${fmtTime(lastMin.t)} · €/MWh` : "no data yet";
+
+  $("da-now").textContent = fmtEur(daNow);
+  $("da-now").style.color = colorFor(daNow);
+  $("da-time").textContent = daPoint ? `from ${fmtTime(daPoint.t)} · €/MWh` : "no data yet";
+
+  const spread = lastQh && daNow != null ? lastQh.v - daNow : null;
+  $("spread-now").textContent = spread == null ? "–" : `${spread >= 0 ? "+" : ""}${spread.toFixed(2)}`;
+  $("spread-now").style.color = spread == null ? "" : (spread >= 0 ? "var(--pos)" : "var(--neg)");
+}
+
+async function load() {
+  lastLoad = Date.now();
+  const now = new Date();
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+  const end = now < dayEnd ? now : dayEnd;
+
+  const errors = [];
+  const safe = async (label, fn, fallback) => {
+    try { return await fn(); } catch (e) { errors.push(`${label}: ${e.message}`); return fallback; }
+  };
+  const [qh, min, da] = await Promise.all([
+    safe("Elia QH", () => fetchElia(QH_DATASET, dayStart, end), []),
+    safe("Elia 1-min", () => fetchElia(MIN_DATASET, dayStart, end), []),
+    safe("Day-ahead", () => fetchDayAhead(dayStart, dayEnd), { points: [], updated: null }),
+  ]);
+  const daPoints = da.points;
+
+  showCards(qh, min, daPoints, now);
+  drawChart(qh, min, daPoints, dayStart, dayEnd, now);
+  $("errors").textContent = errors.join(" · ");
+  $("status").textContent = `Updated ${fmtTime(now)}` +
+    (da.updated ? ` · day-ahead file ${da.updated.toLocaleDateString()} ${fmtTime(da.updated)}` : "");
+}
+
+function startTimer() {
+  if (timer) clearInterval(timer);
+  timer = setInterval(() => { if (document.visibilityState === "visible") load(); }, REFRESH_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - lastLoad > MIN_GAP_MS) load();
+});
+$("refresh").addEventListener("click", () => load());
+
+load();
+startTimer();
+</script>
+</body>
+</html>
