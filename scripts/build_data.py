@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Fetch ENTSO-E day-ahead prices (A44, Belgium) and write docs/data/da.json.
+"""Update docs/data/da.json with ENTSO-E day-ahead prices (A44, Belgium).
 
-Reads the security token from the ENTSOE_TOKEN environment variable (a GitHub
-Actions secret in CI, or from your shell locally). The token is never printed:
-request URLs are not logged, because they contain it.
+Covers the last HISTORY_DAYS days plus two days ahead. Stored values are kept,
+so history beyond the fetched window is never lost. Imbalance prices are not
+stored here: the page reads Elia's history directly.
 
-Writes a 3-day window (yesterday to the day after tomorrow, UTC) so the page
-can pick out the local day in Brussels. If the fetch fails, the existing file
-is left untouched and the script exits non-zero.
+ENTSOE_TOKEN is read from the environment and is never printed: request URLs
+are not logged, because they contain it.
+
+Series are stored as parallel arrays: minutes since the Unix epoch (UTC) and
+prices in EUR/MWh. On failure the previous file is kept and the script exits 1.
 """
 import json
 import os
@@ -21,7 +23,9 @@ from datetime import datetime, timedelta, timezone
 
 ENDPOINTS = ["https://web-api.tp.entsoe.eu/api", "https://external-api.tp.entsoe.eu/api"]
 BE_EIC = "10YBE----------2"
-OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "data", "da.json")
+HISTORY_DAYS = 360  # ENTSO-E allows at most one year per request
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "data")
+DA_PATH = os.path.join(DATA_DIR, "da.json")
 
 
 def local(tag):
@@ -37,7 +41,27 @@ def child(el, *names):
     return el
 
 
-def fetch_xml(token, start, end):
+def minute_of(dt):
+    return int(dt.timestamp() // 60)
+
+
+def load_series(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    return dict(zip(data["t"], data["v"]))
+
+
+def save_series(path, series):
+    ts = sorted(series)
+    payload = {"t": ts, "v": [round(series[t], 2) for t in ts]}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, separators=(",", ":"))
+
+
+def fetch_entsoe_xml(token, start, end):
     params = {
         "securityToken": token,
         "documentType": "A44",
@@ -51,7 +75,7 @@ def fetch_xml(token, start, end):
     last_error = None
     for base in ENDPOINTS:
         try:
-            with urllib.request.urlopen(f"{base}?{query}", timeout=30) as resp:
+            with urllib.request.urlopen(f"{base}?{query}", timeout=60) as resp:
                 body = resp.read().decode("utf-8", "replace")
                 ctype = resp.headers.get("Content-Type", "")
         except (urllib.error.URLError, TimeoutError) as e:
@@ -68,7 +92,7 @@ def fetch_xml(token, start, end):
     raise RuntimeError(last_error or "all endpoints failed")
 
 
-def parse_points(xml_text):
+def parse_entsoe_points(xml_text):
     root = ET.fromstring(xml_text)
     points = []
     for ts in root.iter():
@@ -93,8 +117,19 @@ def parse_points(xml_text):
                     continue
                 t = start + timedelta(minutes=minutes * (int(pos.text) - 1))
                 points.append((t, float(amount.text)))
-    points.sort()
     return points
+
+
+def update_day_ahead(token, now):
+    start = (now - timedelta(days=HISTORY_DAYS)).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = (now + timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+    points = parse_entsoe_points(fetch_entsoe_xml(token, start, end))
+    if not points:
+        raise RuntimeError("no points returned")
+    series = load_series(DA_PATH)
+    series.update({minute_of(t): v for t, v in points})
+    save_series(DA_PATH, series)
+    print(f"day-ahead: {len(points)} points fetched, {len(series)} stored")
 
 
 def main():
@@ -103,25 +138,10 @@ def main():
         sys.exit("ENTSOE_TOKEN is not set")
 
     now = datetime.now(timezone.utc)
-    start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=3)
-
     try:
-        points = parse_points(fetch_xml(token, start, end))
-    except (RuntimeError, ET.ParseError) as e:
-        sys.exit(f"day-ahead fetch failed, keeping previous data: {e}")
-    if not points:
-        sys.exit("day-ahead fetch returned no points, keeping previous data")
-
-    payload = {
-        "updated": now.isoformat(timespec="seconds"),
-        "zone": BE_EIC,
-        "points": [[t.isoformat(timespec="minutes").replace("+00:00", "Z"), v] for t, v in points],
-    }
-    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-    with open(OUT_PATH, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, separators=(",", ":"))
-    print(f"wrote {len(points)} day-ahead points to {os.path.normpath(OUT_PATH)}")
+        update_day_ahead(token, now)
+    except (RuntimeError, ET.ParseError, OSError, ValueError, KeyError) as e:
+        sys.exit(f"day-ahead failed, keeping previous data: {e}")
 
 
 if __name__ == "__main__":

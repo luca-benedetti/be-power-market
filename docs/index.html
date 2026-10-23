@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Belgian power market — today</title>
+<title>Belgian power market</title>
 <style>
   :root {
     --bg: #0b0f14; --panel: #131a22; --text: #e9ecef; --muted: #868e96;
@@ -18,22 +18,26 @@
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   main { max-width: 960px; margin: 0 auto; padding: 16px; }
-  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
   h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .meta { color: var(--muted); font-size: 13px; }
-  button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--grid);
-           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  input[type="date"], button {
+    font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--grid);
+    border-radius: 8px; padding: 6px 10px; }
+  button { cursor: pointer; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 16px 0; }
   .card { background: var(--panel); border: 1px solid var(--grid); border-radius: 12px; padding: 12px 14px; }
   .card .label { color: var(--muted); font-size: 12px; }
   .card .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
   .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .chart { background: var(--panel); border: 1px solid var(--grid); border-radius: 12px; padding: 10px; }
+  .chart { background: var(--panel); border: 1px solid var(--grid); border-radius: 12px; padding: 10px; margin-bottom: 12px; }
   .chart svg { display: block; width: 100%; height: auto; }
+  .chart h2 { font-size: 13px; font-weight: 600; margin: 2px 4px 8px; color: var(--muted); }
   .legend { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .legend span { margin-right: 14px; white-space: nowrap; }
   .sw { display: inline-block; width: 16px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 4px; }
-  .errors { color: var(--da); font-size: 13px; margin-top: 10px; }
+  .errors { color: var(--da); font-size: 13px; margin-top: 4px; min-height: 1em; }
   footer { color: var(--muted); font-size: 12px; margin-top: 16px; line-height: 1.6; }
   a { color: var(--qh); }
 </style>
@@ -41,20 +45,24 @@
 <body>
 <main>
   <header>
-    <h1>Belgian power market — today</h1>
-    <div class="meta" id="status">Loading…</div>
-    <button id="refresh" type="button">Refresh</button>
+    <h1>Belgian power market</h1>
+    <div class="controls">
+      <input type="date" id="day" aria-label="Day to show">
+      <button id="today" type="button">Today</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
   </header>
+  <div class="meta" id="status" style="margin-top: 6px">Loading…</div>
 
   <section class="cards">
-    <div class="card"><div class="label">Quarter-hour (latest)</div><div class="value" id="qh-now">–</div><div class="sub" id="qh-time"></div></div>
-    <div class="card"><div class="label">1-minute (latest)</div><div class="value" id="min-now">–</div><div class="sub" id="min-time"></div></div>
-    <div class="card"><div class="label">Day-ahead (this quarter-hour)</div><div class="value" id="da-now">–</div><div class="sub" id="da-time"></div></div>
-    <div class="card"><div class="label">QH − day-ahead (latest)</div><div class="value" id="spread-now">–</div><div class="sub">imbalance vs. day-ahead, €/MWh</div></div>
+    <div class="card"><div class="label">Quarter-hour (last)</div><div class="value" id="qh-now">–</div><div class="sub" id="qh-time"></div></div>
+    <div class="card"><div class="label">1-minute (last)</div><div class="value" id="min-now">–</div><div class="sub" id="min-time"></div></div>
+    <div class="card"><div class="label">Day-ahead (same quarter-hour)</div><div class="value" id="da-now">–</div><div class="sub" id="da-time"></div></div>
+    <div class="card"><div class="label">QH − day-ahead (last)</div><div class="value" id="spread-now">–</div><div class="sub" id="spread-avg">€/MWh</div></div>
   </section>
 
   <section class="chart">
-    <svg id="chart" viewBox="0 0 960 360" role="img" aria-label="Imbalance and day-ahead prices for today"></svg>
+    <svg id="chart" viewBox="0 0 960 360" role="img" aria-label="Imbalance and day-ahead prices"></svg>
     <div class="legend">
       <span><i class="sw" style="border-color: var(--qh)"></i>Quarter-hour</span>
       <span><i class="sw" style="border-color: var(--min)"></i>1-minute</span>
@@ -62,37 +70,64 @@
     </div>
   </section>
 
+  <section class="chart">
+    <h2>Quarter-hour minus day-ahead, €/MWh</h2>
+    <svg id="spread" viewBox="0 0 960 200" role="img" aria-label="Quarter-hour minus day-ahead spread"></svg>
+  </section>
+
   <div class="errors" id="errors"></div>
 
   <footer>
-    Imbalance prices: <a href="https://opendata.elia.be/explore/dataset/ods162/information/">Elia ods162 (QH)</a>,
-    <a href="https://opendata.elia.be/explore/dataset/ods161/information/">ods161 (1-min)</a>.
+    Imbalance prices: <a href="https://opendata.elia.be/explore/dataset/ods134/information/">Elia ods134 (quarter-hour)</a>,
+    <a href="https://opendata.elia.be/explore/dataset/ods133/information/">ods133 (1-minute)</a>, from 21 May 2024.
     Day-ahead: <a href="https://transparency.entsoe.eu/transmission-domain/r2/dayAheadPrices/show">ENTSO-E</a>,
-    refreshed by a scheduled job every few hours. Times are local (Brussels).
+    stored and refreshed every few hours. Times are local (Brussels).
   </footer>
 </main>
 
 <script>
 const ELIA = "https://opendata.elia.be/api/explore/v2.1/catalog/datasets";
-const QH_DATASET = "ods162";
-const MIN_DATASET = "ods161";
+// Elia history back to 2024-05-21: ods134 = quarter-hour, ods133 = 1-minute
+const QH_DATASET = "ods134";
+const MIN_DATASET = "ods133";
 const REFRESH_MS = 2 * 60 * 1000;
 const MIN_GAP_MS = 60 * 1000;
+const STORED_TTL_MS = 30 * 60 * 1000;
 
 const $ = (id) => document.getElementById(id);
+let selected = startOfDay(new Date());
 let lastLoad = 0;
 let timer = null;
+const stored = {}; // url -> { at, series }
 
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function nextDay(d) { const x = new Date(d); x.setDate(x.getDate() + 1); return x; }
 function isoNoMillis(d) { return d.toISOString().split(".")[0] + "Z"; }
 function pad(n) { return String(n).padStart(2, "0"); }
 function fmtTime(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function dayKey(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function parseDayKey(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
 function fmtEur(v) { return v == null ? "–" : `€${v.toFixed(2)}`; }
+function fmtSigned(v) { return v == null ? "–" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}`; }
 function colorFor(v) { return v == null ? "" : (v >= 0 ? "var(--pos)" : "var(--neg)"); }
 
-async function getJSON(url) {
-  const res = await fetch(url, { cache: "no-store" });
+async function getJSON(url, options = {}) {
+  const res = await fetch(url, { cache: "no-store", ...options });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+// Stored history files change only every few hours, so keep them for a while
+async function loadStored(path) {
+  const hit = stored[path];
+  if (hit && Date.now() - hit.at < STORED_TTL_MS) return hit.series;
+  const data = await getJSON(path);
+  const series = data.t.map((m, i) => ({ t: new Date(m * 60000), v: data.v[i] }));
+  stored[path] = { at: Date.now(), series };
+  return series;
 }
 
 // Elia export endpoint: the whole range as one JSON array
@@ -104,15 +139,6 @@ async function fetchElia(dataset, start, end) {
     .filter(p => !isNaN(p.v));
 }
 
-async function fetchDayAhead(dayStart, dayEnd) {
-  const data = await getJSON("data/da.json");
-  const updated = new Date(data.updated);
-  const points = data.points
-    .map(([t, v]) => ({ t: new Date(t), v }))
-    .filter(p => p.t >= dayStart && p.t < dayEnd);
-  return { points, updated };
-}
-
 // Value in effect at time t for a step series (last point at or before t)
 function valueAt(points, t) {
   let v = null;
@@ -120,119 +146,181 @@ function valueAt(points, t) {
   return v;
 }
 
-function drawChart(qh, min, da, dayStart, dayEnd, now) {
-  const svg = $("chart");
-  const W = 960, H = 360, mL = 52, mR = 12, mT = 10, mB = 24;
+function inRange(points, start, end) {
+  return points.filter(p => p.t >= start && p.t < end);
+}
+
+// Shared chart furniture: plot geometry, hour labels, and the "now" marker
+function frame(svgId, W, H, dayStart, dayEnd, now, isToday) {
+  const mL = 52, mR = 12, mT = 10, mB = 24;
   const plotW = W - mL - mR, plotH = H - mT - mB;
   const tMin = dayStart.getTime(), tMax = dayEnd.getTime();
   const X = (t) => mL + ((t - tMin) / (tMax - tMin)) * plotW;
-
-  const all = [...qh, ...min, ...da].map(p => p.v);
-  let vMin = all.length ? Math.min(...all) : -1;
-  let vMax = all.length ? Math.max(...all) : 1;
-  if (vMin === vMax) { vMin -= 1; vMax += 1; }
-  const pad_ = (vMax - vMin) * 0.08; vMin -= pad_; vMax += pad_;
-  const Y = (v) => mT + plotH - ((v - vMin) / (vMax - vMin)) * plotH;
-
   const parts = [];
-  const ticks = 5;
-  for (let i = 0; i <= ticks; i++) {
-    const v = vMin + ((vMax - vMin) * i) / ticks, y = Y(v);
-    parts.push(`<line x1="${mL}" x2="${W - mR}" y1="${y}" y2="${y}" stroke="var(--grid)"/>`);
-    parts.push(`<text x="${mL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v.toFixed(0)}</text>`);
-  }
-  if (vMin < 0 && vMax > 0) {
-    parts.push(`<line x1="${mL}" x2="${W - mR}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--axis)"/>`);
-  }
   for (let h = 0; h <= 24; h += 6) {
     const t = new Date(dayStart); t.setHours(h, 0, 0, 0);
     const x = X(t.getTime());
     parts.push(`<text x="${x}" y="${H - 6}" text-anchor="${h === 0 ? "start" : h === 24 ? "end" : "middle"}" font-size="11" fill="var(--muted)">${pad(h)}:00</text>`);
   }
-  if (now >= dayStart && now <= dayEnd) {
+  if (isToday) {
     parts.push(`<line x1="${X(now.getTime())}" x2="${X(now.getTime())}" y1="${mT}" y2="${H - mB}" stroke="var(--axis)" stroke-dasharray="3 3"/>`);
   }
+  return { parts, X, mL, mR, mT, mB, plotW, plotH, W, H };
+}
+
+// Linear y scale with padding that always includes zero when it is in range
+function yScale(values, mT, plotH, pad = 0.08) {
+  let vMin = values.length ? Math.min(...values) : -1;
+  let vMax = values.length ? Math.max(...values) : 1;
+  if (vMin === vMax) { vMin -= 1; vMax += 1; }
+  const p = (vMax - vMin) * pad; vMin -= p; vMax += p;
+  return { vMin, vMax, Y: (v) => mT + plotH - ((v - vMin) / (vMax - vMin)) * plotH };
+}
+
+function yGrid(parts, ys, mL, W, mR, ticks) {
+  for (let i = 0; i <= ticks; i++) {
+    const v = ys.vMin + ((ys.vMax - ys.vMin) * i) / ticks, y = ys.Y(v);
+    parts.push(`<line x1="${mL}" x2="${W - mR}" y1="${y}" y2="${y}" stroke="var(--grid)"/>`);
+    parts.push(`<text x="${mL - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v.toFixed(0)}</text>`);
+  }
+  if (ys.vMin < 0 && ys.vMax > 0) {
+    parts.push(`<line x1="${mL}" x2="${W - mR}" y1="${ys.Y(0)}" y2="${ys.Y(0)}" stroke="var(--axis)"/>`);
+  }
+}
+
+function drawChart(qh, min, da, dayStart, dayEnd, now, isToday) {
+  const W = 960, H = 360;
+  const f = frame("chart", W, H, dayStart, dayEnd, now, isToday);
+  const ys = yScale([...qh, ...min, ...da].map(p => p.v), f.mT, f.plotH);
+  yGrid(f.parts, ys, f.mL, W, f.mR, 5);
 
   // Step path: each value holds until the next point; optionally extend to the right edge
   function step(points, color, width, extend, dashed) {
     if (points.length < 1) return "";
-    let d = `M${X(points[0].t.getTime())},${Y(points[0].v)}`;
+    let d = `M${f.X(points[0].t.getTime())},${ys.Y(points[0].v)}`;
     for (let i = 1; i < points.length; i++) {
-      const x = X(points[i].t.getTime());
-      d += ` L${x},${Y(points[i - 1].v)} L${x},${Y(points[i].v)}`;
+      const x = f.X(points[i].t.getTime());
+      d += ` L${x},${ys.Y(points[i - 1].v)} L${x},${ys.Y(points[i].v)}`;
     }
-    if (extend) {
-      const last = points[points.length - 1];
-      d += ` L${X(tMax)},${Y(last.v)}`;
-    }
+    if (extend) d += ` L${f.X(dayEnd.getTime())},${ys.Y(points[points.length - 1].v)}`;
     const dash = dashed ? ` stroke-dasharray="5 4"` : "";
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}"${dash} stroke-linejoin="round"/>`;
   }
-  parts.push(step(da, "var(--da)", 1.8, true, true));
-  parts.push(step(min, "var(--min)", 1, false, false));
-  parts.push(step(qh, "var(--qh)", 2.5, false, false));
-
-  svg.innerHTML = parts.join("");
+  f.parts.push(step(da, "var(--da)", 1.8, true, true));
+  f.parts.push(step(min, "var(--min)", 1, false, false));
+  f.parts.push(step(qh, "var(--qh)", 2.5, false, false));
+  $("chart").innerHTML = f.parts.join("");
 }
 
-function showCards(qh, min, da, now) {
+function drawSpread(spread, dayStart, dayEnd, now, isToday) {
+  const W = 960, H = 200;
+  const f = frame("spread", W, H, dayStart, dayEnd, now, isToday);
+  const ys = yScale([0, ...spread.map(p => p.v)], f.mT, f.plotH, 0.1);
+  yGrid(f.parts, ys, f.mL, W, f.mR, 3);
+  const slotMs = 15 * 60 * 1000;
+  const slotW = f.plotW / ((dayEnd - dayStart) / slotMs);
+  const barW = Math.max(1, slotW * 0.8);
+  const y0 = ys.Y(0);
+  for (const p of spread) {
+    const x = f.X(p.t.getTime()), y1 = ys.Y(p.v);
+    const color = p.v >= 0 ? "var(--pos)" : "var(--neg)";
+    f.parts.push(`<rect x="${x}" y="${Math.min(y0, y1)}" width="${barW}" height="${Math.max(0.5, Math.abs(y1 - y0))}" fill="${color}"/>`);
+  }
+  $("spread").innerHTML = f.parts.join("");
+}
+
+function showCards(qh, min, da, now, isToday) {
   const lastQh = qh.filter(p => p.t <= now).slice(-1)[0];
   const lastMin = min.filter(p => p.t <= now).slice(-1)[0];
-  const daNow = valueAt(da, now);
-  const daPoint = da.filter(p => p.t <= now).slice(-1)[0];
+  const daAtQh = lastQh ? valueAt(da, lastQh.t) : null;
+  const daPoint = da.filter(p => !lastQh || p.t <= lastQh.t).slice(-1)[0];
+  const spreads = qh
+    .filter(p => p.t <= now)
+    .map(p => ({ t: p.t, v: p.v - valueAt(da, p.t) }))
+    .filter(p => p.v != null && !isNaN(p.v));
+  const spread = lastQh && daAtQh != null ? lastQh.v - daAtQh : null;
+  const avg = spreads.length ? spreads.reduce((s, p) => s + p.v, 0) / spreads.length : null;
 
+  const label = isToday ? "" : "last of day · ";
   $("qh-now").textContent = fmtEur(lastQh?.v);
   $("qh-now").style.color = colorFor(lastQh?.v);
-  $("qh-time").textContent = lastQh ? `at ${fmtTime(lastQh.t)} · €/MWh` : "no data yet";
+  $("qh-time").textContent = lastQh ? `${label}at ${fmtTime(lastQh.t)}` : "no data";
 
   $("min-now").textContent = fmtEur(lastMin?.v);
   $("min-now").style.color = colorFor(lastMin?.v);
-  $("min-time").textContent = lastMin ? `at ${fmtTime(lastMin.t)} · €/MWh` : "no data yet";
+  $("min-time").textContent = lastMin ? `${label}at ${fmtTime(lastMin.t)}` : "no data";
 
-  $("da-now").textContent = fmtEur(daNow);
-  $("da-now").style.color = colorFor(daNow);
-  $("da-time").textContent = daPoint ? `from ${fmtTime(daPoint.t)} · €/MWh` : "no data yet";
+  $("da-now").textContent = fmtEur(daAtQh);
+  $("da-now").style.color = colorFor(daAtQh);
+  $("da-time").textContent = daPoint ? `from ${fmtTime(daPoint.t)}` : "no data";
 
-  const spread = lastQh && daNow != null ? lastQh.v - daNow : null;
-  $("spread-now").textContent = spread == null ? "–" : `${spread >= 0 ? "+" : ""}${spread.toFixed(2)}`;
-  $("spread-now").style.color = spread == null ? "" : (spread >= 0 ? "var(--pos)" : "var(--neg)");
+  $("spread-now").textContent = fmtSigned(spread);
+  $("spread-now").style.color = spread == null ? "" : colorFor(spread);
+  $("spread-avg").textContent = avg == null ? "€/MWh" : `day average ${fmtSigned(avg)} €/MWh`;
+  return spreads;
+}
+
+function setDay(d) {
+  selected = startOfDay(d);
+  $("day").value = dayKey(selected);
+  history.replaceState(null, "", `#${dayKey(selected)}`);
+  load();
 }
 
 async function load() {
   lastLoad = Date.now();
   const now = new Date();
-  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
-  const end = now < dayEnd ? now : dayEnd;
+  const dayStart = startOfDay(selected);
+  const dayEnd = nextDay(dayStart);
+  const isToday = dayKey(dayStart) === dayKey(now);
+  const end = isToday ? now : dayEnd;
 
   const errors = [];
   const safe = async (label, fn, fallback) => {
     try { return await fn(); } catch (e) { errors.push(`${label}: ${e.message}`); return fallback; }
   };
-  const [qh, min, da] = await Promise.all([
-    safe("Elia QH", () => fetchElia(QH_DATASET, dayStart, end), []),
-    safe("Elia 1-min", () => fetchElia(MIN_DATASET, dayStart, end), []),
-    safe("Day-ahead", () => fetchDayAhead(dayStart, dayEnd), { points: [], updated: null }),
+  const [qh, min, daAll] = await Promise.all([
+    safe("Elia quarter-hour", () => fetchElia(QH_DATASET, dayStart, end), []),
+    safe("Elia 1-minute", () => fetchElia(MIN_DATASET, dayStart, end), []),
+    safe("Day-ahead", () => loadStored("data/da.json"), []),
   ]);
-  const daPoints = da.points;
+  const da = inRange(daAll, dayStart, dayEnd);
 
-  showCards(qh, min, daPoints, now);
-  drawChart(qh, min, daPoints, dayStart, dayEnd, now);
+  const spreads = showCards(qh, min, da, now, isToday);
+  drawChart(qh, min, da, dayStart, dayEnd, now, isToday);
+  drawSpread(spreads.filter(p => p.t >= dayStart && p.t < dayEnd), dayStart, dayEnd, now, isToday);
+
+  if (!qh.length && !min.length && !da.length) errors.push("no data for this day");
   $("errors").textContent = errors.join(" · ");
-  $("status").textContent = `Updated ${fmtTime(now)}` +
-    (da.updated ? ` · day-ahead file ${da.updated.toLocaleDateString()} ${fmtTime(da.updated)}` : "");
+  const when = isToday ? `Updated ${fmtTime(now)}` : `Showing ${selected.toLocaleDateString()}`;
+  $("status").textContent = when;
 }
 
 function startTimer() {
   if (timer) clearInterval(timer);
-  timer = setInterval(() => { if (document.visibilityState === "visible") load(); }, REFRESH_MS);
+  timer = setInterval(() => {
+    if (document.visibilityState === "visible" && dayKey(selected) === dayKey(new Date())) load();
+  }, REFRESH_MS);
 }
 
+$("day").max = dayKey(new Date());
+$("day").addEventListener("change", (e) => {
+  const d = parseDayKey(e.target.value);
+  if (d) setDay(d);
+});
+$("today").addEventListener("click", () => setDay(new Date()));
+$("refresh").addEventListener("click", () => load());
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && Date.now() - lastLoad > MIN_GAP_MS) load();
 });
-$("refresh").addEventListener("click", () => load());
+window.addEventListener("hashchange", () => {
+  const d = parseDayKey(location.hash.slice(1));
+  if (d && dayKey(d) !== dayKey(selected)) setDay(d);
+});
 
+const fromHash = parseDayKey(location.hash.slice(1));
+selected = fromHash && fromHash <= startOfDay(new Date()) ? fromHash : startOfDay(new Date());
+$("day").value = dayKey(selected);
 load();
 startTimer();
 </script>
