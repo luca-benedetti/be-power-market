@@ -87,9 +87,10 @@
 
 <script>
 const ELIA = "https://opendata.elia.be/api/explore/v2.1/catalog/datasets";
-// Elia history back to 2024-05-21: ods134 = quarter-hour, ods133 = 1-minute
-const QH_DATASET = "ods134";
-const MIN_DATASET = "ods133";
+// Elia validated history starts 2024-05-21 (ods134 = quarter-hour, ods133 = 1-minute).
+// The live datasets (ods162, ods161) cover only the last ~2 days, which history lags behind.
+const QH_HISTORY = "ods134", QH_LIVE = "ods162";
+const MIN_HISTORY = "ods133", MIN_LIVE = "ods161";
 const REFRESH_MS = 2 * 60 * 1000;
 const MIN_GAP_MS = 60 * 1000;
 const STORED_TTL_MS = 30 * 60 * 1000;
@@ -148,6 +149,14 @@ function valueAt(points, t) {
 
 function inRange(points, start, end) {
   return points.filter(p => p.t >= start && p.t < end);
+}
+
+// Join two sources on timestamp; the preferred (validated history) wins where both have a value
+function mergeSeries(base, preferred) {
+  const byTime = new Map();
+  for (const p of base) byTime.set(p.t.getTime(), p);
+  for (const p of preferred) byTime.set(p.t.getTime(), p);
+  return [...byTime.values()].sort((a, b) => a.t - b.t);
 }
 
 // Shared chart furniture: plot geometry, hour labels, and the "now" marker
@@ -279,11 +288,15 @@ async function load() {
   const safe = async (label, fn, fallback) => {
     try { return await fn(); } catch (e) { errors.push(`${label}: ${e.message}`); return fallback; }
   };
-  const [qh, min, daAll] = await Promise.all([
-    safe("Elia quarter-hour", () => fetchElia(QH_DATASET, dayStart, end), []),
-    safe("Elia 1-minute", () => fetchElia(MIN_DATASET, dayStart, end), []),
+  const [qhHist, qhLive, minHist, minLive, daAll] = await Promise.all([
+    safe("Elia quarter-hour history", () => fetchElia(QH_HISTORY, dayStart, dayEnd), []),
+    safe("Elia quarter-hour live", () => fetchElia(QH_LIVE, dayStart, end), []),
+    safe("Elia 1-minute history", () => fetchElia(MIN_HISTORY, dayStart, dayEnd), []),
+    safe("Elia 1-minute live", () => fetchElia(MIN_LIVE, dayStart, end), []),
     safe("Day-ahead", () => loadStored("data/da.json"), []),
   ]);
+  const qh = mergeSeries(qhLive, qhHist);
+  const min = mergeSeries(minLive, minHist);
   const da = inRange(daAll, dayStart, dayEnd);
 
   const spreads = showCards(qh, min, da, now, isToday);
